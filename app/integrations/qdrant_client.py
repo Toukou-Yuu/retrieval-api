@@ -56,6 +56,25 @@ class QdrantClient:
         if response.status_code >= 400:
             raise api_error(502, "QDRANT_ERROR", "Failed to delete Qdrant points")
 
+    def set_document_payload(
+        self,
+        collection: str,
+        document_id: str,
+        payload: dict[str, Any],
+    ) -> None:
+        request = {
+            "payload": payload,
+            "filter": {"must": [{"key": "document_id", "match": {"value": document_id}}]},
+        }
+        response = httpx.post(
+            f"{self.base_url}/collections/{collection}/points/payload",
+            params={"wait": "true"},
+            json=request,
+            timeout=self.timeout,
+        )
+        if response.status_code >= 400:
+            raise api_error(502, "QDRANT_ERROR", "Failed to update Qdrant payload")
+
     def search(
         self,
         collection: str,

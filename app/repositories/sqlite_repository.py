@@ -163,6 +163,276 @@ class SQLiteRepository:
             conn.execute("DELETE FROM collections WHERE name = ?", (name,))
         return {"documents": documents, "chunks": chunks}
 
+    def get_document(self, collection: str, document_id: str) -> dict[str, Any] | None:
+        with self.connect() as conn:
+            row = conn.execute(
+                "SELECT * FROM documents WHERE collection = ? AND id = ?",
+                (collection, document_id),
+            ).fetchone()
+        return dict(row) if row else None
+
+    def list_documents(self, collection: str) -> list[dict[str, Any]]:
+        with self.connect() as conn:
+            rows = conn.execute(
+                "SELECT * FROM documents WHERE collection = ? ORDER BY updated_at DESC",
+                (collection,),
+            ).fetchall()
+        return [dict(row) for row in rows]
+
+    def upsert_document(self, document: dict[str, Any]) -> None:
+        now = utc_now()
+        existing = self.get_document(document["collection"], document["id"])
+        created_at = existing["created_at"] if existing else now
+        with self.connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO documents (
+                  id, collection, source, doc_type, title, text_hash, metadata_json,
+                  status, created_at, updated_at, indexed_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(collection, id) DO UPDATE SET
+                  source = excluded.source,
+                  doc_type = excluded.doc_type,
+                  title = excluded.title,
+                  text_hash = excluded.text_hash,
+                  metadata_json = excluded.metadata_json,
+                  status = excluded.status,
+                  updated_at = excluded.updated_at,
+                  indexed_at = excluded.indexed_at
+                """,
+                (
+                    document["id"],
+                    document["collection"],
+                    document["source"],
+                    document["doc_type"],
+                    document["title"],
+                    document["text_hash"],
+                    json.dumps(document["metadata"], ensure_ascii=False, sort_keys=True),
+                    document["status"],
+                    created_at,
+                    document["updated_at"],
+                    now,
+                ),
+            )
+
+    def replace_chunks(
+        self,
+        collection: str,
+        document_id: str,
+        chunks: list[dict[str, Any]],
+    ) -> int:
+        now = utc_now()
+        with self.connect() as conn:
+            old_count = conn.execute(
+                "SELECT COUNT(*) AS count FROM chunks WHERE collection = ? AND document_id = ?",
+                (collection, document_id),
+            ).fetchone()["count"]
+            conn.execute(
+                "DELETE FROM keyword_index WHERE collection = ? AND document_id = ?",
+                (collection, document_id),
+            )
+            conn.execute(
+                "DELETE FROM chunks WHERE collection = ? AND document_id = ?",
+                (collection, document_id),
+            )
+            for chunk in chunks:
+                metadata_json = json.dumps(
+                    chunk["metadata"],
+                    ensure_ascii=False,
+                    sort_keys=True,
+                )
+                conn.execute(
+                    """
+                    INSERT INTO chunks (
+                      id, collection, document_id, chunk_index, text, text_hash,
+                      token_count, metadata_json, created_at, updated_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        chunk["id"],
+                        collection,
+                        document_id,
+                        chunk["chunk_index"],
+                        chunk["text"],
+                        chunk["text_hash"],
+                        chunk["token_count"],
+                        metadata_json,
+                        now,
+                        now,
+                    ),
+                )
+                conn.execute(
+                    """
+                    INSERT INTO keyword_index (
+                      collection, document_id, chunk_id, title, text, metadata_json
+                    ) VALUES (?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        collection,
+                        document_id,
+                        chunk["id"],
+                        chunk["metadata"].get("title", ""),
+                        chunk["text"],
+                        metadata_json,
+                    ),
+                )
+        return old_count
+
+    def get_chunks(self, collection: str, document_id: str | None = None) -> list[dict[str, Any]]:
+        sql = "SELECT * FROM chunks WHERE collection = ?"
+        params: list[Any] = [collection]
+        if document_id:
+            sql += " AND document_id = ?"
+            params.append(document_id)
+        sql += " ORDER BY document_id, chunk_index"
+        with self.connect() as conn:
+            rows = conn.execute(sql, params).fetchall()
+        return [dict(row) for row in rows]
+
+    def delete_document(self, collection: str, document_id: str) -> int:
+        with self.connect() as conn:
+            deleted_chunks = conn.execute(
+                "SELECT COUNT(*) AS count FROM chunks WHERE collection = ? AND document_id = ?",
+                (collection, document_id),
+            ).fetchone()["count"]
+            conn.execute(
+                "DELETE FROM keyword_index WHERE collection = ? AND document_id = ?",
+                (collection, document_id),
+            )
+            conn.execute(
+                "DELETE FROM chunks WHERE collection = ? AND document_id = ?",
+                (collection, document_id),
+            )
+            conn.execute(
+                "DELETE FROM documents WHERE collection = ? AND id = ?",
+                (collection, document_id),
+            )
+        return deleted_chunks
+
+    def update_document_status(self, collection: str, document_id: str, status: str) -> None:
+        document = self.get_document(collection, document_id)
+        if not document:
+            return
+        metadata = json.loads(document["metadata_json"])
+        metadata["status"] = status
+        metadata_json = json.dumps(metadata, ensure_ascii=False, sort_keys=True)
+        now = utc_now()
+        with self.connect() as conn:
+            conn.execute(
+                """
+                UPDATE documents
+                SET status = ?, metadata_json = ?, updated_at = ?
+                WHERE collection = ? AND id = ?
+                """,
+                (status, metadata_json, now, collection, document_id),
+            )
+            rows = conn.execute(
+                "SELECT * FROM chunks WHERE collection = ? AND document_id = ?",
+                (collection, document_id),
+            ).fetchall()
+            conn.execute(
+                "DELETE FROM keyword_index WHERE collection = ? AND document_id = ?",
+                (collection, document_id),
+            )
+            for row in rows:
+                chunk_metadata = json.loads(row["metadata_json"])
+                chunk_metadata["status"] = status
+                chunk_metadata_json = json.dumps(
+                    chunk_metadata,
+                    ensure_ascii=False,
+                    sort_keys=True,
+                )
+                conn.execute(
+                    """
+                    UPDATE chunks
+                    SET metadata_json = ?, updated_at = ?
+                    WHERE collection = ? AND id = ?
+                    """,
+                    (chunk_metadata_json, now, collection, row["id"]),
+                )
+                conn.execute(
+                    """
+                    INSERT INTO keyword_index (
+                      collection, document_id, chunk_id, title, text, metadata_json
+                    ) VALUES (?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        collection,
+                        document_id,
+                        row["id"],
+                        chunk_metadata.get("title", ""),
+                        row["text"],
+                        chunk_metadata_json,
+                    ),
+                )
+
+    def insert_job(self, job: dict[str, Any]) -> None:
+        now = utc_now()
+        with self.connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO index_jobs (
+                  job_id, collection, action, document_id, payload_json, status,
+                  retry_count, max_retries, created_at, updated_at, started_at, finished_at,
+                  last_error
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    job["job_id"],
+                    job["collection"],
+                    job["action"],
+                    job.get("document_id"),
+                    json.dumps(job.get("payload", {}), ensure_ascii=False),
+                    job["status"],
+                    job.get("retry_count", 0),
+                    job.get("max_retries", 5),
+                    now,
+                    now,
+                    job.get("started_at"),
+                    job.get("finished_at"),
+                    job.get("last_error"),
+                ),
+            )
+
+    def update_job(self, job_id: str, **fields: Any) -> None:
+        if not fields:
+            return
+        fields["updated_at"] = utc_now()
+        assignments = ", ".join(f"{key} = ?" for key in fields)
+        values = list(fields.values()) + [job_id]
+        with self.connect() as conn:
+            conn.execute(f"UPDATE index_jobs SET {assignments} WHERE job_id = ?", values)
+
+    def get_job(self, job_id: str) -> dict[str, Any] | None:
+        with self.connect() as conn:
+            row = conn.execute("SELECT * FROM index_jobs WHERE job_id = ?", (job_id,)).fetchone()
+        return dict(row) if row else None
+
+    def list_jobs(
+        self,
+        collection: str | None = None,
+        status: str | None = None,
+        limit: int = 50,
+    ) -> list[dict[str, Any]]:
+        sql = "SELECT * FROM index_jobs WHERE 1=1"
+        params: list[Any] = []
+        if collection:
+            sql += " AND collection = ?"
+            params.append(collection)
+        if status:
+            sql += " AND status = ?"
+            params.append(status)
+        sql += " ORDER BY created_at DESC LIMIT ?"
+        params.append(limit)
+        with self.connect() as conn:
+            rows = conn.execute(sql, params).fetchall()
+        return [dict(row) for row in rows]
+
+    def delete_job(self, job_id: str) -> bool:
+        with self.connect() as conn:
+            cur = conn.execute("DELETE FROM index_jobs WHERE job_id = ?", (job_id,))
+        return cur.rowcount > 0
+
 
 def decode_collection(row: dict[str, Any]) -> dict[str, Any]:
     return {
