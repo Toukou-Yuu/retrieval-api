@@ -114,6 +114,23 @@ def test_async_upsert_creates_pending_job_and_retry_indexes(client):
     assert client.get("/v1/documents/200iq_cases/200iq:case:001").status_code == 200
 
 
+def test_async_upsert_background_processes_job(client):
+    create_collection(client)
+    response = client.post(
+        "/v1/documents/upsert",
+        json={
+            "collection": "200iq_cases",
+            "documents": [document_payload()],
+            "indexing": {"mode": "async"},
+        },
+    )
+    job_id = response.json()["jobs"][0]["job_id"]
+    job = client.get(f"/v1/index/jobs/{job_id}").json()
+
+    assert job["status"] == "done"
+    assert client.get("/v1/documents/200iq_cases/200iq:case:001").status_code == 200
+
+
 def test_dimension_mismatch_marks_job_failed(client):
     create_collection(client, dimension=4)
     response = client.post(

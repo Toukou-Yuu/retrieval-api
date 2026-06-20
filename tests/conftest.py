@@ -10,6 +10,7 @@ from app.repositories.sqlite_repository import SQLiteRepository
 from app.services.chunk_service import ChunkService
 from app.services.collection_service import CollectionService
 from app.services.document_service import DocumentService
+from app.services.search_service import SearchService
 
 
 class FakeQdrant:
@@ -45,7 +46,14 @@ class FakeQdrant:
                 point["payload"].update(payload)
 
     def search(self, collection: str, vector: list[float], limit: int, filters: dict | None = None):
-        return []
+        results = []
+        for point in self.points.get(collection, {}).values():
+            payload = point["payload"]
+            if filters and filters.get("status") and payload.get("status") != filters["status"]:
+                continue
+            score = sum(a * b for a, b in zip(point["vector"], vector, strict=True))
+            results.append({"id": point["id"], "score": score, "payload": payload})
+        return sorted(results, key=lambda item: item["score"], reverse=True)[:limit]
 
 
 class FakeEmbedding:
@@ -53,7 +61,17 @@ class FakeEmbedding:
         return True
 
     def embed(self, texts: list[str], normalize: bool = True):
-        return "test-model", 3, [[1.0, 0.0, 0.0] for _ in texts]
+        vectors = []
+        for text in texts:
+            lowered = text.lower()
+            vectors.append(
+                [
+                    1.0 if "subscription" in lowered else 0.0,
+                    1.0 if "airport" in lowered else 0.0,
+                    1.0,
+                ]
+            )
+        return "test-model", 3, vectors
 
 
 @pytest.fixture
@@ -80,6 +98,12 @@ def client(tmp_path) -> Iterator[TestClient]:
         qdrant,
         embedding,
         ChunkService(),
+    )
+    app.dependency_overrides[deps.get_search_service] = lambda: SearchService(
+        repo,
+        qdrant,
+        embedding,
+        settings,
     )
     with TestClient(app) as test_client:
         test_client.fake_qdrant = qdrant

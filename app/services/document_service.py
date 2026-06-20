@@ -191,6 +191,10 @@ class DocumentService:
         return self._decode_job(row)
 
     def retry_job(self, job_id: str) -> dict[str, Any]:
+        self.process_job(job_id)
+        return self.get_job(job_id)
+
+    def process_job(self, job_id: str) -> None:
         row = self.repo.get_job(job_id)
         if not row:
             raise api_error(404, "INDEX_JOB_FAILED", f"Job not found: {job_id}")
@@ -221,7 +225,6 @@ class DocumentService:
                 finished_at=utc_now(),
                 last_error=str(exc),
             )
-        return self.get_job(job_id)
 
     def delete_job(self, job_id: str) -> dict[str, Any]:
         deleted = self.repo.delete_job(job_id)

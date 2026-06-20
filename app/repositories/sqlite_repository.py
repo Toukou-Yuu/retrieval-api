@@ -289,6 +289,40 @@ class SQLiteRepository:
             rows = conn.execute(sql, params).fetchall()
         return [dict(row) for row in rows]
 
+    def get_chunk(self, collection: str, chunk_id: str) -> dict[str, Any] | None:
+        with self.connect() as conn:
+            row = conn.execute(
+                "SELECT * FROM chunks WHERE collection = ? AND id = ?",
+                (collection, chunk_id),
+            ).fetchone()
+        return dict(row) if row else None
+
+    def keyword_search(self, collection: str, query: str, limit: int) -> list[dict[str, Any]]:
+        with self.connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT collection, document_id, chunk_id, title, text, metadata_json,
+                       bm25(keyword_index) AS score
+                FROM keyword_index
+                WHERE collection = ? AND keyword_index MATCH ?
+                ORDER BY score
+                LIMIT ?
+                """,
+                (collection, query, limit),
+            ).fetchall()
+            if not rows:
+                rows = conn.execute(
+                    """
+                    SELECT collection, document_id, chunk_id, title, text, metadata_json,
+                           -1.0 AS score
+                    FROM keyword_index
+                    WHERE collection = ? AND (title LIKE ? OR text LIKE ?)
+                    LIMIT ?
+                    """,
+                    (collection, f"%{query}%", f"%{query}%", limit),
+                ).fetchall()
+        return [dict(row) for row in rows]
+
     def delete_document(self, collection: str, document_id: str) -> int:
         with self.connect() as conn:
             deleted_chunks = conn.execute(
@@ -432,6 +466,39 @@ class SQLiteRepository:
         with self.connect() as conn:
             cur = conn.execute("DELETE FROM index_jobs WHERE job_id = ?", (job_id,))
         return cur.rowcount > 0
+
+    def log_search(
+        self,
+        *,
+        log_id: str,
+        collection: str | None,
+        query: str,
+        mode: str,
+        top_k: int,
+        filters: dict[str, Any] | None,
+        result_count: int,
+        latency_ms: int,
+    ) -> None:
+        with self.connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO search_logs (
+                  id, collection, query, mode, top_k, filters_json,
+                  result_count, latency_ms, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    log_id,
+                    collection,
+                    query,
+                    mode,
+                    top_k,
+                    json.dumps(filters or {}, ensure_ascii=False, sort_keys=True),
+                    result_count,
+                    latency_ms,
+                    utc_now(),
+                ),
+            )
 
 
 def decode_collection(row: dict[str, Any]) -> dict[str, Any]:

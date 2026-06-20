@@ -7,6 +7,7 @@ from app.repositories.sqlite_repository import SQLiteRepository
 from app.services.chunk_service import ChunkService
 from app.services.collection_service import CollectionService
 from app.services.document_service import DocumentService
+from app.services.search_service import SearchService
 
 
 @lru_cache
@@ -41,3 +42,7 @@ def get_chunk_service() -> ChunkService:
 
 def get_document_service() -> DocumentService:
     return DocumentService(get_repo(), get_qdrant(), get_embedding_client(), get_chunk_service())
+
+
+def get_search_service() -> SearchService:
+    return SearchService(get_repo(), get_qdrant(), get_embedding_client(), get_settings())
