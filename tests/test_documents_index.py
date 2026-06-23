@@ -44,6 +44,16 @@ def test_document_upsert_idempotent_get_and_delete(client):
     assert deleted.json()["deleted"] is True
 
 
+def test_delete_document_is_idempotent(client):
+    create_collection(client)
+
+    response = client.delete("/v1/documents/200iq_cases/200iq:case:missing")
+
+    assert response.status_code == 200
+    assert response.json()["deleted_chunks"] == 0
+    assert response.json()["deleted"] is True
+
+
 def test_document_update_removes_old_chunks(client):
     create_collection(client)
     client.post(

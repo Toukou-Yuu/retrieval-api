@@ -108,8 +108,6 @@ class DocumentService:
         }
 
     def delete(self, collection: str, document_id: str) -> dict[str, Any]:
-        if not self.repo.get_document(collection, document_id):
-            raise api_error(404, "DOCUMENT_NOT_FOUND", f"Document not found: {document_id}")
         deleted_chunks = self.repo.delete_document(collection, document_id)
         self.qdrant.delete_document_points(collection, document_id)
         return {
