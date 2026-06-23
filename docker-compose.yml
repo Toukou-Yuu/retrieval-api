@@ -19,6 +19,8 @@ services:
     depends_on:
       - qdrant
       - embedding-api
+    networks:
+      - agent-services
     restart: unless-stopped
 
   embedding-api:
@@ -33,6 +35,8 @@ services:
       - "127.0.0.1:8100:8100"
     volumes:
       - ./data/models:/models
+    networks:
+      - agent-services
     restart: unless-stopped
 
   qdrant:
@@ -43,4 +47,11 @@ services:
       - "127.0.0.1:6334:6334"
     volumes:
       - ./data/qdrant:/qdrant/storage
+    networks:
+      - agent-services
     restart: unless-stopped
+
+networks:
+  agent-services:
+    external: true
+    name: agent-services
