@@ -40,3 +40,17 @@ def test_collection_dimension_mismatch(client):
     )
     assert response.status_code == 409
     assert response.json()["error"]["code"] == "DIMENSION_MISMATCH"
+
+
+def test_collection_embedding_model_mismatch(client):
+    client.post(
+        "/v1/collections",
+        json={"name": "docs", "embedding_model": "model-a", "embedding_dimension": 3},
+    )
+    response = client.post(
+        "/v1/collections",
+        json={"name": "docs", "embedding_model": "model-b", "embedding_dimension": 3},
+    )
+
+    assert response.status_code == 409
+    assert response.json()["error"]["code"] == "EMBEDDING_MODEL_MISMATCH"

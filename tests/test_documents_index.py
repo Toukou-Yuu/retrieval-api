@@ -152,3 +152,20 @@ def test_dimension_mismatch_marks_job_failed(client):
     assert response.status_code == 400
     assert response.json()["error"]["code"] == "DIMENSION_MISMATCH"
     assert jobs[0]["status"] == "failed"
+
+
+def test_embedding_model_mismatch_marks_job_failed_before_writing_index(client):
+    create_collection(client)
+    client.fake_embedding.model = "other-model"
+
+    response = client.post(
+        "/v1/documents/upsert",
+        json={"collection": "200iq_cases", "documents": [document_payload()]},
+    )
+    jobs = client.get("/v1/index/jobs").json()["items"]
+
+    assert response.status_code == 409
+    assert response.json()["error"]["code"] == "EMBEDDING_MODEL_MISMATCH"
+    assert jobs[0]["status"] == "failed"
+    assert client.get("/v1/documents/200iq_cases/200iq:case:001").status_code == 404
+    assert client.fake_qdrant.points["200iq_cases"] == {}

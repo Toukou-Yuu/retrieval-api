@@ -57,6 +57,8 @@ class FakeQdrant:
 
 
 class FakeEmbedding:
+    model = "test-model"
+
     def health_check(self) -> bool:
         return True
 
@@ -71,7 +73,7 @@ class FakeEmbedding:
                     1.0,
                 ]
             )
-        return "test-model", 3, vectors
+        return self.model, 3, vectors
 
 
 @pytest.fixture
@@ -107,5 +109,6 @@ def client(tmp_path) -> Iterator[TestClient]:
     )
     with TestClient(app) as test_client:
         test_client.fake_qdrant = qdrant
+        test_client.fake_embedding = embedding
         yield test_client
     app.dependency_overrides.clear()

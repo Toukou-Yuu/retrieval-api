@@ -23,6 +23,12 @@ class CollectionService:
         )
         existing = self.repo.get_collection(payload.name)
         if existing:
+            if existing["embedding_model"] != data["embedding_model"]:
+                raise api_error(
+                    409,
+                    "EMBEDDING_MODEL_MISMATCH",
+                    f"Collection already exists with model {existing['embedding_model']}",
+                )
             if int(existing["embedding_dimension"]) != int(data["embedding_dimension"]):
                 raise api_error(
                     409,

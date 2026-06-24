@@ -265,6 +265,12 @@ class DocumentService:
             strategy=collection_row["chunk_strategy"],
         )
         model, dimension, vectors = self.embedding.embed([chunk.text for chunk in chunks])
+        if model != collection_row["embedding_model"]:
+            raise api_error(
+                409,
+                "EMBEDDING_MODEL_MISMATCH",
+                f"Expected {collection_row['embedding_model']}, got {model}",
+            )
         if dimension != int(collection_row["embedding_dimension"]):
             raise api_error(
                 400,
