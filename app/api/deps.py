@@ -25,11 +25,15 @@ def get_qdrant() -> QdrantClient:
 @lru_cache
 def get_embedding_client() -> EmbeddingHTTPClient:
     settings = get_settings()
-    return EmbeddingHTTPClient(settings.embedding_api_url, settings.embedding_timeout_seconds)
+    return EmbeddingHTTPClient(
+        settings.embedding_api_url,
+        settings.embedding_timeout_seconds,
+        settings.default_embedding_model,
+    )
 
 
 def get_collection_service() -> CollectionService:
-    return CollectionService(get_repo(), get_qdrant(), get_settings())
+    return CollectionService(get_repo(), get_qdrant(), get_embedding_client(), get_settings())
 
 
 def get_app_settings() -> Settings:

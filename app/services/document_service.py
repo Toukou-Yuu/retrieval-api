@@ -6,6 +6,7 @@ from datetime import datetime
 from typing import Any
 
 from app.errors import api_error
+from app.integrations.embedding_contract import EmbeddingInputType, EmbeddingResponse
 from app.integrations.embedding_http_client import EmbeddingHTTPClient
 from app.integrations.qdrant_client import QdrantClient
 from app.repositories.sqlite_repository import SQLiteRepository, decode_collection, utc_now
@@ -237,18 +238,30 @@ class DocumentService:
         force: bool = False,
     ) -> dict[str, Any]:
         collection_row = self._collection(collection)
+        embedding_contract = collection_row["embedding"]
+        existing = self.repo.get_document(collection, document.id)
         metadata = {**document.metadata}
         metadata.setdefault("status", "published")
+        metadata.setdefault("tags", [])
+        if document.updated_at:
+            updated_at = document.updated_at.isoformat()
+        elif existing:
+            updated_at = existing["updated_at"]
+        else:
+            updated_at = datetime.now().astimezone().isoformat()
         metadata.update(
             {
+                "collection": collection,
                 "source": document.source,
                 "doc_type": document.doc_type,
                 "document_id": document.id,
+                "updated_at": updated_at,
+                "embedding_model": embedding_contract["model"],
+                "embedding_dimension": embedding_contract["dimension"],
             }
         )
         text_hash = sha256_text(document.text)
         metadata_hash = sha256_json(metadata)
-        existing = self.repo.get_document(collection, document.id)
         if (
             not force
             and existing
@@ -264,20 +277,16 @@ class DocumentService:
             metadata=metadata,
             strategy=collection_row["chunk_strategy"],
         )
-        model, dimension, vectors = self.embedding.embed([chunk.text for chunk in chunks])
-        if model != collection_row["embedding_model"]:
-            raise api_error(
-                409,
-                "EMBEDDING_MODEL_MISMATCH",
-                f"Expected {collection_row['embedding_model']}, got {model}",
-            )
-        if dimension != int(collection_row["embedding_dimension"]):
-            raise api_error(
-                400,
-                "DIMENSION_MISMATCH",
-                f"Expected {collection_row['embedding_dimension']}, got {dimension}",
-                {"model": model},
-            )
+        for chunk in chunks:
+            chunk.metadata["chunk_id"] = chunk.id
+        response = self.embedding.embed_texts(
+            [chunk.text for chunk in chunks],
+            model=embedding_contract["model"],
+            input_type=EmbeddingInputType.DOCUMENT,
+            normalize=bool(embedding_contract["normalized"]),
+        )
+        self._validate_embedding_response(response, embedding_contract, len(chunks))
+        vectors = [item.embedding for item in sorted(response.data, key=lambda item: item.index)]
         chunk_dicts = [
             {
                 "id": chunk.id,
@@ -299,7 +308,7 @@ class DocumentService:
                 "text_hash": text_hash,
                 "metadata": metadata,
                 "status": metadata["status"],
-                "updated_at": (document.updated_at or datetime.now().astimezone()).isoformat(),
+                "updated_at": updated_at,
             }
         )
         self.repo.replace_chunks(collection, document.id, chunk_dicts)
@@ -321,6 +330,38 @@ class DocumentService:
         self.qdrant.delete_document_points(collection, document.id)
         self.qdrant.upsert_points(collection, points)
         return {"skipped": False}
+
+    def _validate_embedding_response(
+        self,
+        response: EmbeddingResponse,
+        contract: dict[str, Any],
+        chunk_count: int,
+    ) -> None:
+        if response.model != contract["model"]:
+            raise api_error(
+                409,
+                "EMBEDDING_MODEL_MISMATCH",
+                f"Expected {contract['model']}, got {response.model}",
+            )
+        if response.dimension != int(contract["dimension"]):
+            raise api_error(
+                400,
+                "EMBEDDING_DIMENSION_MISMATCH",
+                f"Expected {contract['dimension']}, got {response.dimension}",
+                {"model": response.model},
+            )
+        if response.normalized != bool(contract["normalized"]):
+            raise api_error(
+                409,
+                "EMBEDDING_NORMALIZE_MISMATCH",
+                f"Expected normalized={contract['normalized']}, got {response.normalized}",
+            )
+        if len(response.data) != chunk_count:
+            raise api_error(
+                502,
+                "EMBEDDING_CONTRACT_INVALID",
+                "Embedding API returned an unexpected vector count",
+            )
 
     def _set_status(self, collection: str, document_id: str, status: str) -> dict[str, Any]:
         if not self.repo.get_document(collection, document_id):

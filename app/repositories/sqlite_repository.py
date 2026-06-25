@@ -6,6 +6,8 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
+from app.repositories.migrations import run_migrations
+
 
 def utc_now() -> str:
     return datetime.now().astimezone().isoformat()
@@ -24,87 +26,7 @@ class SQLiteRepository:
 
     def init_db(self) -> None:
         with self.connect() as conn:
-            conn.executescript(
-                """
-                CREATE TABLE IF NOT EXISTS collections (
-                  name TEXT PRIMARY KEY,
-                  description TEXT,
-                  embedding_model TEXT NOT NULL,
-                  embedding_dimension INTEGER NOT NULL,
-                  chunk_strategy TEXT NOT NULL,
-                  metadata_schema_json TEXT,
-                  created_at TEXT NOT NULL,
-                  updated_at TEXT NOT NULL
-                );
-
-                CREATE TABLE IF NOT EXISTS documents (
-                  id TEXT NOT NULL,
-                  collection TEXT NOT NULL,
-                  source TEXT NOT NULL,
-                  doc_type TEXT NOT NULL,
-                  title TEXT NOT NULL,
-                  text_hash TEXT NOT NULL,
-                  metadata_json TEXT NOT NULL,
-                  status TEXT NOT NULL,
-                  created_at TEXT NOT NULL,
-                  updated_at TEXT NOT NULL,
-                  indexed_at TEXT,
-                  PRIMARY KEY (collection, id)
-                );
-
-                CREATE TABLE IF NOT EXISTS chunks (
-                  id TEXT NOT NULL,
-                  collection TEXT NOT NULL,
-                  document_id TEXT NOT NULL,
-                  chunk_index INTEGER NOT NULL,
-                  text TEXT NOT NULL,
-                  text_hash TEXT NOT NULL,
-                  token_count INTEGER,
-                  metadata_json TEXT NOT NULL,
-                  created_at TEXT NOT NULL,
-                  updated_at TEXT NOT NULL,
-                  PRIMARY KEY (collection, id)
-                );
-
-                CREATE VIRTUAL TABLE IF NOT EXISTS keyword_index USING fts5(
-                  collection,
-                  document_id,
-                  chunk_id,
-                  title,
-                  text,
-                  metadata_json,
-                  tokenize = 'unicode61'
-                );
-
-                CREATE TABLE IF NOT EXISTS index_jobs (
-                  job_id TEXT PRIMARY KEY,
-                  collection TEXT NOT NULL,
-                  action TEXT NOT NULL,
-                  document_id TEXT,
-                  payload_json TEXT NOT NULL,
-                  status TEXT NOT NULL,
-                  retry_count INTEGER NOT NULL DEFAULT 0,
-                  max_retries INTEGER NOT NULL DEFAULT 5,
-                  last_error TEXT,
-                  created_at TEXT NOT NULL,
-                  updated_at TEXT NOT NULL,
-                  started_at TEXT,
-                  finished_at TEXT
-                );
-
-                CREATE TABLE IF NOT EXISTS search_logs (
-                  id TEXT PRIMARY KEY,
-                  collection TEXT,
-                  query TEXT NOT NULL,
-                  mode TEXT NOT NULL,
-                  top_k INTEGER NOT NULL,
-                  filters_json TEXT,
-                  result_count INTEGER NOT NULL,
-                  latency_ms INTEGER NOT NULL,
-                  created_at TEXT NOT NULL
-                );
-                """
-            )
+            run_migrations(conn)
 
     def health_check(self) -> bool:
         with self.connect() as conn:
@@ -123,16 +45,24 @@ class SQLiteRepository:
                 """
                 INSERT INTO collections (
                   name, description, embedding_model, embedding_dimension,
-                  chunk_strategy, metadata_schema_json, created_at, updated_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                  embedding_normalized, embedding_distance, embedding_contract_version,
+                  embedding_metadata_json, chunk_strategy, metadata_schema_json,
+                  index_status, last_indexed_at, created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     data["name"],
                     data.get("description"),
                     data["embedding_model"],
                     data["embedding_dimension"],
+                    int(data["embedding_normalized"]),
+                    data["embedding_distance"],
+                    data["embedding_contract_version"],
+                    json.dumps(data["embedding"], ensure_ascii=False, sort_keys=True),
                     data["chunk_strategy"],
                     json.dumps(data.get("metadata_schema"), ensure_ascii=False),
+                    data.get("index_status", "ready"),
+                    data.get("last_indexed_at"),
                     now,
                     now,
                 ),
@@ -502,13 +432,20 @@ class SQLiteRepository:
 
 
 def decode_collection(row: dict[str, Any]) -> dict[str, Any]:
+    embedding = json.loads(row["embedding_metadata_json"] or "{}")
     return {
         "name": row["name"],
         "description": row["description"],
         "embedding_model": row["embedding_model"],
         "embedding_dimension": row["embedding_dimension"],
+        "embedding_normalized": bool(row["embedding_normalized"]),
+        "embedding_distance": row["embedding_distance"],
+        "embedding_contract_version": row["embedding_contract_version"],
+        "embedding": embedding,
         "chunk_strategy": row["chunk_strategy"],
         "metadata_schema": json.loads(row["metadata_schema_json"] or "null"),
+        "index_status": row["index_status"],
+        "last_indexed_at": row["last_indexed_at"],
         "created_at": row["created_at"],
         "updated_at": row["updated_at"],
     }

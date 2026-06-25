@@ -1,17 +1,47 @@
 # retrieval-api
 
-Local retrieval service for agent systems. It accepts documents from upstream knowledge services, builds keyword and vector indexes, and returns structured evidence through HTTP APIs.
+`retrieval-api` owns collections, document chunking, indexing jobs, keyword search, and vector-search orchestration. It does not load embedding models. Embeddings are requested from a separate `embedding-api`; vectors are stored in Qdrant and metadata/FTS5 data in SQLite.
 
-## Run
+## Local development without Docker
+
+Core tests run without Docker, Qdrant, or a model download.
 
 ```bash
+python -m venv .venv
+source .venv/bin/activate
+pip install -e ".[dev]"
+
+export RETRIEVAL_DATA_DIR="$(pwd)/data/dev"
+export EMBEDDING_API_URL="http://127.0.0.1:8100"
+export QDRANT_URL="http://127.0.0.1:6333"
+uvicorn app.main:app --reload --host 127.0.0.1 --port 8300
+```
+
+Run the default validation suite:
+
+```bash
+pytest
+ruff check .
+python -m compileall app
+```
+
+Optional integration tests that use real dependencies must be explicitly enabled:
+
+```bash
+RUN_INTEGRATION_TESTS=1 pytest
+```
+
+Deleting `data/dev` resets only local development state. The application migrates existing SQLite metadata automatically, but never deletes Qdrant collections as part of a schema migration.
+
+## Docker deployment
+
+`docker-compose.yml` is the full deployment stack: retrieval-api, embedding-api, and Qdrant. It is not required for local unit testing.
+
+```bash
+docker network create agent-services
 docker compose up -d
 ```
 
-Default API endpoint:
+The services bind their public ports to `127.0.0.1`. The compose stack expects `toukouyuu/embedding-api:latest` to implement the v1 contract documented in [docs/api.md](docs/api.md). Copy `.env.example` to `.env` to override service addresses or contract settings.
 
-```text
-http://127.0.0.1:8300
-```
-
-API documentation is available in `docs/api.md` and in the service OpenAPI page at `/docs`.
+The default endpoint is `http://127.0.0.1:8300`; OpenAPI is available at `/docs`.

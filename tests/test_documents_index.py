@@ -44,6 +44,22 @@ def test_document_upsert_idempotent_get_and_delete(client):
     assert deleted.json()["deleted"] is True
 
 
+def test_document_payload_records_collection_embedding_contract(client):
+    create_collection(client)
+    client.post(
+        "/v1/documents/upsert",
+        json={"collection": "200iq_cases", "documents": [document_payload()]},
+    )
+
+    point = next(iter(client.fake_qdrant.points["200iq_cases"].values()))
+
+    assert point["payload"]["collection"] == "200iq_cases"
+    assert point["payload"]["embedding_model"] == "test-model"
+    assert point["payload"]["embedding_dimension"] == 3
+    assert point["payload"]["chunk_id"]
+    assert point["payload"]["updated_at"]
+
+
 def test_delete_document_is_idempotent(client):
     create_collection(client)
 
@@ -142,7 +158,8 @@ def test_async_upsert_background_processes_job(client):
 
 
 def test_dimension_mismatch_marks_job_failed(client):
-    create_collection(client, dimension=4)
+    create_collection(client)
+    client.fake_embedding.dimension = 4
     response = client.post(
         "/v1/documents/upsert",
         json={"collection": "200iq_cases", "documents": [document_payload()]},
@@ -150,7 +167,7 @@ def test_dimension_mismatch_marks_job_failed(client):
     jobs = client.get("/v1/index/jobs").json()["items"]
 
     assert response.status_code == 400
-    assert response.json()["error"]["code"] == "DIMENSION_MISMATCH"
+    assert response.json()["error"]["code"] == "EMBEDDING_DIMENSION_MISMATCH"
     assert jobs[0]["status"] == "failed"
 
 
@@ -168,4 +185,18 @@ def test_embedding_model_mismatch_marks_job_failed_before_writing_index(client):
     assert response.json()["error"]["code"] == "EMBEDDING_MODEL_MISMATCH"
     assert jobs[0]["status"] == "failed"
     assert client.get("/v1/documents/200iq_cases/200iq:case:001").status_code == 404
+    assert client.fake_qdrant.points["200iq_cases"] == {}
+
+
+def test_normalize_mismatch_marks_job_failed_before_writing_index(client):
+    create_collection(client)
+    client.fake_embedding.response_normalized = False
+
+    response = client.post(
+        "/v1/documents/upsert",
+        json={"collection": "200iq_cases", "documents": [document_payload()]},
+    )
+
+    assert response.status_code == 409
+    assert response.json()["error"]["code"] == "EMBEDDING_NORMALIZE_MISMATCH"
     assert client.fake_qdrant.points["200iq_cases"] == {}

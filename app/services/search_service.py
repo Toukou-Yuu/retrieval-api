@@ -7,9 +7,10 @@ from typing import Any
 
 from app.config import Settings
 from app.errors import api_error
+from app.integrations.embedding_contract import EmbeddingInputType, EmbeddingResponse
 from app.integrations.embedding_http_client import EmbeddingHTTPClient
 from app.integrations.qdrant_client import QdrantClient
-from app.repositories.sqlite_repository import SQLiteRepository
+from app.repositories.sqlite_repository import SQLiteRepository, decode_collection
 from app.schemas import Filters, SearchMode, SearchRequest
 
 
@@ -30,14 +31,11 @@ class SearchService:
         started = time.perf_counter()
         self._validate_request(request)
         filters = request.filters or Filters()
+        collections = [self._collection(name) for name in request.collections]
+        if request.mode in {SearchMode.DENSE, SearchMode.HYBRID}:
+            self._validate_multi_collection_contract(collections)
         all_items: list[dict[str, Any]] = []
-        for collection in request.collections:
-            if not self.repo.get_collection(collection):
-                raise api_error(
-                    404,
-                    "COLLECTION_NOT_FOUND",
-                    f"Collection not found: {collection}",
-                )
+        for collection in collections:
             all_items.extend(self._search_collection(collection, request, filters))
         all_items = sorted(all_items, key=lambda item: item["score"], reverse=True)
         if request.rerank and self.settings.rerank_enabled:
@@ -66,7 +64,7 @@ class SearchService:
 
     def _search_collection(
         self,
-        collection: str,
+        collection: dict[str, Any],
         request: SearchRequest,
         filters: Filters,
     ) -> list[dict[str, Any]]:
@@ -81,7 +79,7 @@ class SearchService:
             )
         if request.mode in {SearchMode.KEYWORD, SearchMode.HYBRID}:
             keyword_items = self._keyword_search(
-                collection,
+                collection["name"],
                 request.query,
                 request.candidate_k,
                 filters,
@@ -94,15 +92,29 @@ class SearchService:
 
     def _dense_search(
         self,
-        collection: str,
+        collection: dict[str, Any],
         query: str,
         limit: int,
         filters: Filters,
     ) -> list[dict[str, Any]]:
-        _, _, vectors = self.embedding.embed([query])
+        embedding_contract = collection["embedding"]
+        response = self.embedding.embed_texts(
+            [query],
+            model=embedding_contract["model"],
+            input_type=EmbeddingInputType.QUERY,
+            normalize=bool(embedding_contract["normalized"]),
+        )
+        if len(response.data) != 1:
+            raise api_error(
+                502,
+                "EMBEDDING_CONTRACT_INVALID",
+                "Embedding API returned an unexpected vector count",
+            )
+        if self.settings.validate_embedding_contract_on_search:
+            self._validate_embedding_response(response, embedding_contract)
         results = self.qdrant.search(
-            collection,
-            vectors[0],
+            collection["name"],
+            response.data[0].embedding,
             limit,
             filters.model_dump(exclude_none=True),
         )
@@ -110,7 +122,7 @@ class SearchService:
         for result in results:
             payload = result.get("payload", {})
             item = {
-                "collection": collection,
+                "collection": collection["name"],
                 "document_id": payload.get("document_id"),
                 "chunk_id": payload.get("chunk_id"),
                 "title": payload.get("title", ""),
@@ -122,6 +134,61 @@ class SearchService:
             if metadata_matches(payload, filters):
                 items.append(item)
         return items
+
+    def _validate_embedding_response(
+        self,
+        response: EmbeddingResponse,
+        contract: dict[str, Any],
+    ) -> None:
+        if response.model != contract["model"]:
+            raise api_error(
+                409,
+                "EMBEDDING_MODEL_MISMATCH",
+                f"Expected {contract['model']}, got {response.model}",
+            )
+        if response.dimension != int(contract["dimension"]):
+            raise api_error(
+                400,
+                "EMBEDDING_DIMENSION_MISMATCH",
+                f"Expected {contract['dimension']}, got {response.dimension}",
+                {"model": response.model},
+            )
+        if response.normalized != bool(contract["normalized"]):
+            raise api_error(
+                409,
+                "EMBEDDING_NORMALIZE_MISMATCH",
+                f"Expected normalized={contract['normalized']}, got {response.normalized}",
+            )
+    def _validate_multi_collection_contract(self, collections: list[dict[str, Any]]) -> None:
+        if self.settings.allow_multi_model_search or len(collections) < 2:
+            return
+        contracts = {
+            (
+                collection["embedding"]["model"],
+                collection["embedding"]["dimension"],
+                collection["embedding"]["normalized"],
+                collection["embedding"]["distance"],
+                collection["embedding"]["contract_version"],
+            )
+            for collection in collections
+        }
+        if len(contracts) == 1:
+            return
+        raise api_error(
+            400,
+            "MULTI_MODEL_SEARCH_NOT_ALLOWED",
+            "Dense search requires matching embedding contracts across collections",
+            {
+                "collections": [
+                    {
+                        "name": collection["name"],
+                        "embedding_model": collection["embedding"]["model"],
+                        "dimension": collection["embedding"]["dimension"],
+                    }
+                    for collection in collections
+                ]
+            },
+        )
 
     def _keyword_search(
         self,
@@ -187,6 +254,12 @@ class SearchService:
             raise api_error(400, "INVALID_REQUEST", "top_k exceeds maximum")
         if request.candidate_k > self.settings.max_candidate_k:
             raise api_error(400, "INVALID_REQUEST", "candidate_k exceeds maximum")
+
+    def _collection(self, name: str) -> dict[str, Any]:
+        row = self.repo.get_collection(name)
+        if not row:
+            raise api_error(404, "COLLECTION_NOT_FOUND", f"Collection not found: {name}")
+        return decode_collection(row)
 
     def _serialize_item(self, item: dict[str, Any], include_breakdown: bool) -> dict[str, Any]:
         payload = {

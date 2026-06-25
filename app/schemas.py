@@ -37,6 +37,20 @@ class CollectionCreate(BaseModel):
         gt=0,
         description="Embedding vector size.",
     )
+    embedding_normalized: bool | None = Field(
+        default=None,
+        description="Whether vectors are normalized before storage.",
+    )
+    embedding_distance: str | None = Field(
+        default=None,
+        min_length=1,
+        description="Qdrant distance metric for this collection.",
+    )
+    embedding_contract_version: str | None = Field(
+        default=None,
+        min_length=1,
+        description="Embedding API contract version.",
+    )
     chunk_strategy: ChunkStrategy = Field(default=ChunkStrategy.PLAIN_TEXT)
     metadata_schema: dict[str, Any] | None = Field(default=None)
 

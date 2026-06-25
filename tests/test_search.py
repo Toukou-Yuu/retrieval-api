@@ -115,3 +115,24 @@ def test_search_requires_collection(client):
 
     assert response.status_code == 400
     assert response.json()["error"]["code"] == "INVALID_REQUEST"
+
+
+def test_dense_multi_collection_search_rejects_different_contracts(client):
+    create_collection(client, name="first")
+    response = client.post(
+        "/v1/collections",
+        json={"name": "second", "embedding_model": "other-model"},
+    )
+    assert response.status_code == 200
+
+    response = client.post(
+        "/v1/search/dense",
+        json={"collections": ["first", "second"], "query": "airport"},
+    )
+
+    assert response.status_code == 400
+    assert response.json()["error"]["code"] == "MULTI_MODEL_SEARCH_NOT_ALLOWED"
+    assert response.json()["error"]["details"]["collections"] == [
+        {"name": "first", "embedding_model": "test-model", "dimension": 3},
+        {"name": "second", "embedding_model": "other-model", "dimension": 3},
+    ]

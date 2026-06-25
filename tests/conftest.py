@@ -5,6 +5,12 @@ from fastapi.testclient import TestClient
 
 from app.api import deps
 from app.config import Settings
+from app.integrations.embedding_contract import (
+    EmbeddingInputType,
+    EmbeddingModelInfo,
+    EmbeddingResponse,
+    EmbeddingVector,
+)
 from app.main import app
 from app.repositories.sqlite_repository import SQLiteRepository
 from app.services.chunk_service import ChunkService
@@ -15,14 +21,21 @@ from app.services.search_service import SearchService
 
 class FakeQdrant:
     def __init__(self) -> None:
-        self.collections: dict[str, int] = {}
+        self.collections: dict[str, dict[str, object]] = {}
         self.points: dict[str, dict[str, dict]] = {}
 
     def health_check(self) -> bool:
         return True
 
-    def create_collection(self, name: str, dimension: int) -> None:
-        self.collections[name] = dimension
+    def collection_exists(self, name: str) -> bool:
+        return name in self.collections
+
+    def get_collection_vector_config(self, name: str) -> tuple[int, str]:
+        collection = self.collections[name]
+        return int(collection["dimension"]), str(collection["distance"])
+
+    def create_collection(self, name: str, dimension: int, distance: str = "Cosine") -> None:
+        self.collections[name] = {"dimension": dimension, "distance": distance}
         self.points.setdefault(name, {})
 
     def delete_collection(self, name: str) -> None:
@@ -58,22 +71,57 @@ class FakeQdrant:
 
 class FakeEmbedding:
     model = "test-model"
+    dimension = 3
+    response_normalized: bool | None = None
+    ready = True
 
     def health_check(self) -> bool:
         return True
+
+    def ready_check(self) -> bool:
+        return self.ready
+
+    def get_model(self, name: str | None = None) -> EmbeddingModelInfo:
+        return EmbeddingModelInfo(
+            name=name or self.model,
+            dimension=self.dimension,
+            normalized=True,
+            recommended_distance="Cosine",
+        )
 
     def embed(self, texts: list[str], normalize: bool = True):
         vectors = []
         for text in texts:
             lowered = text.lower()
-            vectors.append(
-                [
-                    1.0 if "subscription" in lowered else 0.0,
-                    1.0 if "airport" in lowered else 0.0,
-                    1.0,
-                ]
-            )
-        return self.model, 3, vectors
+            vector = [
+                1.0 if "subscription" in lowered else 0.0,
+                1.0 if "airport" in lowered else 0.0,
+                1.0,
+            ]
+            vectors.append(vector + [0.0] * (self.dimension - len(vector)))
+        return self.model, self.dimension, vectors
+
+    def embed_texts(
+        self,
+        texts: list[str],
+        model: str,
+        input_type: EmbeddingInputType,
+        normalize: bool,
+    ) -> EmbeddingResponse:
+        returned_model, dimension, vectors = self.embed(texts, normalize)
+        response_normalized = (
+            self.response_normalized if self.response_normalized is not None else normalize
+        )
+        return EmbeddingResponse(
+            model=returned_model,
+            dimension=dimension,
+            normalized=response_normalized,
+            input_type=input_type,
+            data=[
+                EmbeddingVector(index=index, embedding=vector)
+                for index, vector in enumerate(vectors)
+            ],
+        )
 
 
 @pytest.fixture
@@ -93,6 +141,7 @@ def client(tmp_path) -> Iterator[TestClient]:
     app.dependency_overrides[deps.get_collection_service] = lambda: CollectionService(
         repo,
         qdrant,
+        embedding,
         settings,
     )
     app.dependency_overrides[deps.get_document_service] = lambda: DocumentService(

@@ -23,13 +23,29 @@ def ready(
     repo: Annotated[SQLiteRepository, Depends(get_repo)],
     qdrant: Annotated[QdrantClient, Depends(get_qdrant)],
     embedding: Annotated[EmbeddingHTTPClient, Depends(get_embedding_client)],
+    settings: Annotated[Settings, Depends(get_app_settings)],
 ) -> dict[str, object]:
     dependencies = {
-        "sqlite": "ok" if repo.health_check() else "error",
-        "qdrant": "ok" if qdrant.health_check() else "error",
-        "embedding_api": "ok" if embedding.health_check() else "error",
+        "sqlite": {
+            "status": "ok" if repo.health_check() else "error",
+            "path": str(settings.sqlite_path),
+        },
+        "qdrant": {
+            "status": "ok" if qdrant.health_check() else "error",
+            "url": settings.qdrant_url,
+        },
+        "embedding_api": {
+            "status": "ok" if embedding.ready_check() else "error",
+            "url": settings.embedding_api_url,
+            "contract_version": settings.embedding_api_contract_version,
+            "default_model": settings.default_embedding_model,
+        },
     }
-    status = "ready" if all(value == "ok" for value in dependencies.values()) else "degraded"
+    status = (
+        "ready"
+        if all(dependency["status"] == "ok" for dependency in dependencies.values())
+        else "degraded"
+    )
     return {"status": status, "dependencies": dependencies}
 
 
@@ -38,6 +54,17 @@ def info(settings: Annotated[Settings, Depends(get_app_settings)]) -> dict[str, 
     return {
         "service": "retrieval-api",
         "version": __version__,
+        "contract": {"embedding_api": settings.embedding_api_contract_version},
+        "defaults": {
+            "embedding_model": settings.default_embedding_model,
+            "embedding_normalized": settings.default_embedding_normalize,
+            "embedding_distance": settings.default_embedding_distance,
+        },
+        "stores": {"vector_db": "qdrant", "keyword_index": "sqlite_fts5"},
+        "limits": {
+            "max_top_k": settings.max_top_k,
+            "max_candidate_k": settings.max_candidate_k,
+        },
         "embedding_model": settings.default_embedding_model,
         "embedding_dimension": settings.default_embedding_dimension,
         "vector_db": "qdrant",
