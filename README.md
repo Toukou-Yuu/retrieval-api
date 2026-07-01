@@ -45,3 +45,28 @@ docker compose up -d
 The services bind their public ports to `127.0.0.1`. The compose stack expects `toukouyuu/embedding-api:latest` to implement the v1 contract documented in [docs/api.md](docs/api.md). Copy `.env.example` to `.env` to override service addresses or contract settings.
 
 The default endpoint is `http://127.0.0.1:8300`; OpenAPI is available at `/docs`.
+
+
+## MCP tools
+
+`retrieval-api` provides first-class MCP tools for Alice/Hermes in addition to the REST API.
+
+```bash
+uv run retrieval-api mcp
+uv run retrieval-api mcp-http --host 127.0.0.1 --port 8301 --path /mcp
+```
+
+Production deployment uses the same image as the REST API with a separate `retrieval-api-mcp` sidecar. See [docs/mcp.md](docs/mcp.md) for Hermes configuration, tool inventory, permissions, side effects, and tests.
+
+Tool names:
+
+```text
+retrieval_list_collections
+retrieval_create_collection
+retrieval_search
+retrieval_get_document
+retrieval_upsert_documents
+retrieval_rebuild_collection
+retrieval_index_status
+retrieval_retry_job
+```

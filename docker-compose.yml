@@ -37,6 +37,48 @@ services:
       retries: 5
       start_period: 10s
 
+  retrieval-api-mcp:
+    image: toukouyuu/retrieval-api:latest
+    build:
+      context: .
+      dockerfile: docker/Dockerfile
+    container_name: retrieval-api-mcp
+    command: ["retrieval-api", "mcp-http", "--host", "0.0.0.0", "--port", "8301", "--path", "/mcp"]
+    environment:
+      - RETRIEVAL_DATA_DIR=/data
+      - QDRANT_URL=http://qdrant:6333
+      - EMBEDDING_API_URL=http://embedding-api:8100
+      - EMBEDDING_API_CONTRACT_VERSION=embedding-api.v1
+      - DEFAULT_EMBEDDING_MODEL=BAAI/bge-m3
+      - DEFAULT_EMBEDDING_NORMALIZE=true
+      - DEFAULT_EMBEDDING_DISTANCE=Cosine
+      - VALIDATE_EMBEDDING_CONTRACT_ON_STARTUP=false
+      - VALIDATE_EMBEDDING_CONTRACT_ON_COLLECTION_CREATE=true
+      - VALIDATE_EMBEDDING_CONTRACT_ON_SEARCH=true
+      - ALLOW_MULTI_MODEL_SEARCH=false
+      - RERANK_ENABLED=false
+    ports:
+      - "127.0.0.1:8301:8301"
+    volumes:
+      - ./data/retrieval:/data
+    depends_on:
+      retrieval-api:
+        condition: service_healthy
+      qdrant:
+        condition: service_healthy
+      embedding-api:
+        condition: service_healthy
+    networks:
+      - agent-services
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "python", "-c", "import socket; s=socket.create_connection(('127.0.0.1', 8301), timeout=3); s.close()"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+
+
   embedding-api:
     image: toukouyuu/embedding-api:latest
     container_name: embedding-api
