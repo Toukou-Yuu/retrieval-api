@@ -5,10 +5,12 @@ services:
       context: .
       dockerfile: docker/Dockerfile
     container_name: retrieval-api
+    env_file:
+      - path: .env
+        required: false
     environment:
       - RETRIEVAL_DATA_DIR=/data
       - QDRANT_URL=http://qdrant:6333
-      - EMBEDDING_API_URL=http://embedding-api:8100
       - EMBEDDING_API_CONTRACT_VERSION=embedding-api.v1
       - DEFAULT_EMBEDDING_MODEL=BAAI/bge-m3
       - DEFAULT_EMBEDDING_NORMALIZE=true
@@ -44,10 +46,12 @@ services:
       dockerfile: docker/Dockerfile
     container_name: retrieval-api-mcp
     command: ["retrieval-api", "mcp-http", "--host", "0.0.0.0", "--port", "8301", "--path", "/mcp"]
+    env_file:
+      - path: .env
+        required: false
     environment:
       - RETRIEVAL_DATA_DIR=/data
       - QDRANT_URL=http://qdrant:6333
-      - EMBEDDING_API_URL=http://embedding-api:8100
       - EMBEDDING_API_CONTRACT_VERSION=embedding-api.v1
       - DEFAULT_EMBEDDING_MODEL=BAAI/bge-m3
       - DEFAULT_EMBEDDING_NORMALIZE=true
